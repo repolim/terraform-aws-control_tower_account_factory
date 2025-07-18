@@ -23,14 +23,14 @@ phases:
       - |
         CUSTOMIZATION=$(aws dynamodb get-item --table-name aft-request-metadata --key "{\"id\": {\"S\": \"$VENDED_ACCOUNT_ID\"}}" --attributes-to-get "account_customizations_name" | jq --raw-output ".Item.account_customizations_name.S")
 
-      # Check if customization directory exists       
+      # Check if customization directory exists
       - |
-        if [[ ! -z "$CUSTOMIZATION" ]]; then  
+        if [[ ! -z "$CUSTOMIZATION" ]]; then
           if [[ ! -d "$DEFAULT_PATH/$CUSTOMIZATION" ]]; then
             echo "Error: ${CUSTOMIZATION} directory does not exist"
             exit 1
           fi
-          
+
           echo "Found customization" $CUSTOMIZATION
 
           # Configure Development SSH Key
@@ -47,7 +47,7 @@ phases:
             chmod 600 ~/.ssh/ssh_key
             eval "$(ssh-agent -s)"
             ssh-add ~/.ssh/ssh_key
-          fi   
+          fi
 
           # Clone AFT
           AWS_MODULE_SOURCE=$(aws ssm get-parameter --name "/aft/config/aft-pipeline-code-source/repo-url" --query "Parameter.Value" --output text)
@@ -79,7 +79,7 @@ phases:
     on-failure: ABORT
     commands:
       - |
-        if [[ ! -z "$CUSTOMIZATION" ]]; then 
+        if [[ ! -z "$CUSTOMIZATION" ]]; then
           source $DEFAULT_PATH/api-helpers-venv/bin/activate
           export AWS_PROFILE=aft-target
           $DEFAULT_PATH/$CUSTOMIZATION/api_helpers/pre-api-helpers.sh
@@ -91,7 +91,7 @@ phases:
     commands:
       # Apply Customizations
       - |
-        if [[ ! -z "$CUSTOMIZATION" ]]; then 
+        if [[ ! -z "$CUSTOMIZATION" ]]; then
           source $DEFAULT_PATH/aft-venv/bin/activate
           if [ $TF_DISTRIBUTION = "oss" ]; then
             TF_BACKEND_REGION=$(aws ssm get-parameter --name "/aft/config/oss-backend/primary-region" --query "Parameter.Value" --output text)
@@ -104,18 +104,43 @@ phases:
             echo "Installing Terraform"
             curl -q -o terraform_${TF_VERSION}_linux_amd64.zip https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
             mkdir -p /opt/aft/bin
-            unzip -q -o terraform_${TF_VERSION}_linux_amd64.zip 
+            unzip -q -o terraform_${TF_VERSION}_linux_amd64.zip
             mv terraform /opt/aft/bin
             /opt/aft/bin/terraform -no-color --version
 
             cd $DEFAULT_PATH/$CUSTOMIZATION/terraform
             for f in *.jinja; do jinja2 $f -D timestamp="$TIMESTAMP" -D tf_distribution_type=$TF_DISTRIBUTION -D provider_region=$CT_MGMT_REGION -D region=$TF_BACKEND_REGION -D aft_admin_role_arn=$AFT_EXEC_ROLE_ARN -D target_admin_role_arn=$VENDED_EXEC_ROLE_ARN -D bucket=$TF_S3_BUCKET -D key=$TF_S3_KEY -D dynamodb_table=$TF_DDB_TABLE -D kms_key_id=$TF_KMS_KEY_ID -D tf_version=$TF_VERSION >> ./$(basename $f .jinja).tf; done
             for f in *.tf; do echo "\n \n"; echo $f; cat $f; done
-            
+
             cd $DEFAULT_PATH/$CUSTOMIZATION/terraform
             export AWS_PROFILE=aft-management-admin
             /opt/aft/bin/terraform init -no-color
             /opt/aft/bin/terraform apply -no-color --auto-approve
+
+          elif [ $TF_DISTRIBUTION = "tofu" ]; then
+            TF_BACKEND_REGION=$(aws ssm get-parameter --name "/aft/config/oss-backend/primary-region" --query "Parameter.Value" --output text)
+            TF_KMS_KEY_ID=$(aws ssm get-parameter --name "/aft/config/oss-backend/kms-key-id" --query "Parameter.Value" --output text)
+            TF_DDB_TABLE=$(aws ssm get-parameter --name "/aft/config/oss-backend/table-id" --query "Parameter.Value" --output text)
+            TF_S3_BUCKET=$(aws ssm get-parameter --name "/aft/config/oss-backend/bucket-id" --query "Parameter.Value" --output text)
+            TF_S3_KEY=$VENDED_ACCOUNT_ID-aft-account-customizations/terraform.tfstate
+
+            cd /tmp
+            echo "Installing OpenTofu"
+            curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+            chmod +x install-opentofu.sh
+            ./install-opentofu.sh --install-method standalone
+            rm -f install-opentofu.sh
+            tofu -no-color --version
+
+            cd $DEFAULT_PATH/$CUSTOMIZATION/terraform
+            for f in *.jinja; do jinja2 $f -D timestamp="$TIMESTAMP" -D tf_distribution_type=$TF_DISTRIBUTION -D provider_region=$CT_MGMT_REGION -D region=$TF_BACKEND_REGION -D aft_admin_role_arn=$AFT_EXEC_ROLE_ARN -D target_admin_role_arn=$VENDED_EXEC_ROLE_ARN -D bucket=$TF_S3_BUCKET -D key=$TF_S3_KEY -D dynamodb_table=$TF_DDB_TABLE -D kms_key_id=$TF_KMS_KEY_ID -D tf_version=$TF_VERSION >> ./$(basename $f .jinja).tf; done
+            for f in *.tf; do echo "\n \n"; echo $f; cat $f; done
+
+            cd $DEFAULT_PATH/$CUSTOMIZATION/terraform
+            export AWS_PROFILE=aft-management-admin
+            tofu init -no-color
+            tofu apply -no-color --auto-approve
+
           else
             TF_BACKEND_REGION=$(aws ssm get-parameter --name "/aft/config/oss-backend/primary-region" --query "Parameter.Value" --output text)
             TF_ORG_NAME=$(aws ssm get-parameter --name "/aft/config/terraform/org-name" --query "Parameter.Value" --output text)
@@ -128,7 +153,7 @@ phases:
             cd $DEFAULT_PATH/$CUSTOMIZATION/terraform
             for f in *.jinja; do jinja2 $f -D timestamp="$TIMESTAMP" -D provider_region=$CT_MGMT_REGION -D tf_distribution_type=$TF_DISTRIBUTION -D aft_admin_role_arn=$AFT_EXEC_ROLE_ARN -D target_admin_role_arn=$VENDED_EXEC_ROLE_ARN -D terraform_org_name=$TF_ORG_NAME -D terraform_workspace_name=$TF_WORKSPACE_NAME  >> ./$(basename $f .jinja).tf; done
             for f in *.tf; do echo "\n \n"; echo $f; cat $f; done
-            
+
             cd $DEFAULT_PATH/$CUSTOMIZATION
             tar -czf temp_configuration_file.tar.gz -C terraform --exclude .git --exclude venv .
             python3 $DEFAULT_PATH/aws-aft-core-framework/sources/scripts/workspace_manager.py --operation "deploy" --organization_name $TF_ORG_NAME --workspace_name $TF_WORKSPACE_NAME --assume_role_arn $AFT_ADMIN_ROLE_ARN --assume_role_session_name $ROLE_SESSION_NAME --api_endpoint $TF_ENDPOINT --api_token $TF_TOKEN --terraform_version $TF_VERSION --config_file $TF_CONFIG_PATH --project_name "$TF_PROJECT_NAME"
@@ -149,7 +174,7 @@ phases:
           exit 1
         fi
       - |
-        if [[ ! -z "$CUSTOMIZATION" ]]; then 
+        if [[ ! -z "$CUSTOMIZATION" ]]; then
           source $DEFAULT_PATH/api-helpers-venv/bin/activate
           export AWS_PROFILE=aft-target
           $DEFAULT_PATH/$CUSTOMIZATION/api_helpers/post-api-helpers.sh
