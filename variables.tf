@@ -312,8 +312,8 @@ variable "terraform_distribution" {
   type        = string
   default     = "oss"
   validation {
-    condition     = contains(["oss", "tfc", "tfe"], var.terraform_distribution)
-    error_message = "Valid values for var: terraform_distribution are (oss, tfc, tfe)."
+    condition     = contains(["oss", "tfc", "tfe", "tofu"], var.terraform_distribution)
+    error_message = "Valid values for var: terraform_distribution are (oss, tfc, tfe, tofu)."
   }
 }
 
